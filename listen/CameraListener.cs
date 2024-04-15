@@ -3,51 +3,77 @@ using System.Text;
 
 namespace listen;
 
+/*
+The camera sends messages prefixed with four lines (it's unclear how
+Content-Length relates to the actual payload, it doesn't seem to match):
+
+    --myboundary
+    Content-Type: text/plain
+    Content-Length: ##
+    [blank line]
+
+If we're receiving data but we didn't see the --myboundary then simply
+discard everything, we connected while output was already in progress, or
+we missed something, etc.
+
+After that header, either a single line payload will be sent:
+
+    Code=VideoMotionInfo;action=State;index=0
+
+...or a multi-line JSON payload, of which there are several; the presence
+of data={ indicates this type of payload:
+
+    Code=SmartMotionVehicle;action=Start;index=0;data={
+       "RegionName" : [ "Area1" ],
+       "WindowId" : [ 0 ],
+       "object" : [
+          {
+             "Rect" : [ 4576, 5000, 4984, 5256 ],
+             "VehicleID" : 13421
+          }
+       ]
+    }
+    [blank line]
+
+Note it appears the trailing blank line may actually be nulls (ASCII 0)... the
+program just goes into discard-mode after the closing } which lets it ignore
+everything until a new header boundary is seen.
+*/
+
+/// <summary>
+/// Asynchronously handles basic HTTP communication and event message parsing.
+/// </summary>
 internal class CameraListener
 {
+    /// <summary>
+    /// A copy of the settings read from configuration.
+    /// </summary>
     public CameraSettings Camera { get; set; }
+
+    // TODO: Encapsulate
     public HttpClient Client { get; set; }
+
+    // TODO: Encapsulate
     public HttpResponseMessage Response { get; set; }
 
-    /*
-    The camera sends messages prefixed with four lines (it's unclear how
-    Content-Length relates to the actual payload, it doesn't seem to match):
-
-        --myboundary
-        Content-Type: text/plain
-        Content-Length: ##
-        [blank line]
-
-    If we're receiving data but we didn't see the --myboundary then simply
-    discard everything, we connected while output was already in progress, or
-    we missed something, etc.
-
-    After that header, either a single line payload will be sent:
-
-        Code=VideoMotionInfo;action=State;index=0
-
-    ...or a multi-line JSON payload, of which there are several; the presence
-    of data={ indicates this type of payload:
-
-        Code=SmartMotionVehicle;action=Start;index=0;data={
-           "RegionName" : [ "Area1" ],
-           "WindowId" : [ 0 ],
-           "object" : [
-              {
-                 "Rect" : [ 4576, 5000, 4984, 5256 ],
-                 "VehicleID" : 13421
-              }
-           ]
-        }
-        [blank line]
-
-    */
-
+    // Controls how the basic line-by-line data collection works.
     private ReadingMode Mode = ReadingMode.Idle;
+
+    // Accumulates payload strings as they arrive.
     private StringBuilder Data = new StringBuilder();
+
+    // Sets an upper limit on the number of lines accumulated in JSON payload
+    // mode; the assumption is that if we read too much, something went wrong
+    // and we just reset and wait for a new header boundary.
     private int JsonCountdown;
+
+    // The limit described above.
     private readonly int MAX_JSON_LINES = 10;
 
+    /// <summary>
+    /// Asynchronously loops reading payload data from the camera. When a payload has
+    /// been received, it is sent to ProcessData, then posted to the Program.Messages queue.
+    /// </summary>
     public async Task WaitForMessageAsync(CancellationToken cancellationToken)
     {
         using var stream = await Response.Content.ReadAsStreamAsync(cancellationToken);
@@ -138,17 +164,21 @@ internal class CameraListener
         }
     }
 
+    /// <summary>
+    /// Parses a payload and posts it to the Program.Messages queue.
+    /// </summary>
     private void ProcessData()
     {
         try
         {
             var payload = new CameraPayload()
             {
-                Name = Camera.Name
+                Name = Camera.Name,
+                RawPayload = Data.ToString()
             };
-
-            var data = Data.ToString();
             Data.Clear();
+
+            var data = payload.RawPayload;
 
             var jsonIndex = data.IndexOf("{");
             if (jsonIndex > -1)

@@ -1,9 +1,10 @@
 ﻿
 namespace listen;
 
-// From The Man, The Myth, The Legend, Stephen Cleary:
-// https://github.com/StephenCleary/AsyncEx/blob/master/src/Nito.AsyncEx.Tasks/CancellationTokenTaskSource.cs
-
+/// <summary>
+/// Use a CancellationToken as a first-class Task; from The Man, The Myth, The Legend, Stephen Cleary:
+/// https://github.com/StephenCleary/AsyncEx/blob/master/src/Nito.AsyncEx.Tasks/CancellationTokenTaskSource.cs
+/// </summary>
 internal class CancellationTokenTaskSource<T> : IDisposable
 {
     /// <summary>

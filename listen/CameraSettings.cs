@@ -1,6 +1,9 @@
 ﻿
 namespace listen;
 
+/// <summary>
+/// POCO to be populated by the MS config extensions.
+/// </summary>
 internal class CameraSettings
 {
     public string Name { get; set; }

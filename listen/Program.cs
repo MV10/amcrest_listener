@@ -27,10 +27,14 @@ internal class Program
             Environment.Exit(-1);
         }
 
+        // Basic setup
         GetCamerasFromConfig();
         GetCamerasToMonitor(args);
+        
+        // Establish connections
         await PrepareCameraListeners();
 
+        // Start the async tasks
         List<Task> tasks = new(listeners.Count + 3)
         {
             Task.Run(() => WaitForEscapeKey(cts.Token)),
@@ -39,6 +43,7 @@ internal class Program
         };
         tasks.AddRange(listeners.Select(c => Task.Run(() => c.WaitForMessageAsync(cts.Token))).ToList());
 
+        // Wait for the ESC key to cancel the token
         await Task.WhenAny(tasks);
     }
 
@@ -97,11 +102,15 @@ internal class Program
         
         foreach(var cam in cameras)
         {
+            // Fortunately .NET5 added automated digest authentication support, just
+            // set the credentials and connect.
             var handler = new HttpClientHandler()
             {
                 Credentials = new NetworkCredential(cam.User, cam.Pass)
             };
 
+            // Infinite timeout lets us continuously read the HTTP stream for
+            // long-duration connectivity.
             var listener = new CameraListener
             {
                 Camera = cam,
@@ -112,7 +121,6 @@ internal class Program
             };
 
             Console.WriteLine($"Connecting to {cam.DisplayName}...");
-
             try
             {
                 var request = new HttpRequestMessage(HttpMethod.Get, connectionTemplate.Replace("*", cam.Addr));
@@ -157,7 +165,7 @@ internal class Program
             {
                 if(Messages.TryDequeue(out var message))
                 {
-                    Console.WriteLine($"{message.Name} {message.Timestamp}: {message.Code}");
+                    Console.WriteLine($"{message.Name} {message.Timestamp}: {message.Code} {message.Action}");
                 }
             }
             await Task.Yield();
