@@ -1,4 +1,5 @@
 ﻿
+using System.Net;
 using System.Text;
 
 namespace listen;
@@ -48,13 +49,11 @@ internal class CameraListener
     /// <summary>
     /// A copy of the settings read from configuration.
     /// </summary>
-    public CameraSettings Camera { get; set; }
+    public CameraSettings Camera { get; private set; }
 
-    // TODO: Encapsulate
-    public HttpClient Client { get; set; }
-
-    // TODO: Encapsulate
-    public HttpResponseMessage Response { get; set; }
+    // Doing HTTP things ... it appears .NET5+ doesn't require dispose; need to verify
+    private HttpClient Client { get; set; }
+    private HttpResponseMessage Response { get; set; }
 
     // Controls how the basic line-by-line data collection works.
     private ReadingMode Mode = ReadingMode.Idle;
@@ -69,6 +68,51 @@ internal class CameraListener
 
     // The limit described above.
     private readonly int MAX_JSON_LINES = 10;
+
+    // ctor
+    public CameraListener(CameraSettings camera)
+    {
+        Camera = camera;
+    }
+
+    // Attempt to connect (response is error message, or empty string if successful)
+    public async Task<string> TryConnect()
+    {
+        // Fortunately .NET5 added automated digest authentication support, just
+        // set the credentials and connect.
+        var handler = new HttpClientHandler()
+        {
+            Credentials = new NetworkCredential(Camera.User, Camera.Pass)
+        };
+
+        // Infinite timeout lets us continuously read the HTTP stream for
+        // long-duration connectivity.
+        Client = new(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+
+        try
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, Program.ConnectionTemplate.Replace("*", Camera.Addr));
+
+            Response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            if (!Response.IsSuccessStatusCode)
+            {
+                return $"\tFailed, status {Response.StatusCode}";
+            }
+        }
+        catch (HttpRequestException)
+        {
+            return "\tNo response";
+        }
+        catch (Exception ex)
+        {
+            return $"\tFailed, {ex.GetType()}";
+        }
+
+        return string.Empty; // success
+    }
 
     /// <summary>
     /// Asynchronously loops reading payload data from the camera. When a payload has

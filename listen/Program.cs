@@ -9,7 +9,7 @@ namespace listen;
 
 internal class Program
 {
-    static readonly string connectionTemplate = @"http://*/cgi-bin/eventManager.cgi?action=attach%26codes=%5BAll%5D";
+    public static readonly string ConnectionTemplate = @"http://*/cgi-bin/eventManager.cgi?action=attach%26codes=%5BAll%5D";
 
     static IConfigurationRoot configRoot;
     static ServiceProvider services;
@@ -102,47 +102,17 @@ internal class Program
         
         foreach(var cam in cameras)
         {
-            // Fortunately .NET5 added automated digest authentication support, just
-            // set the credentials and connect.
-            var handler = new HttpClientHandler()
-            {
-                Credentials = new NetworkCredential(cam.User, cam.Pass)
-            };
-
-            // Infinite timeout lets us continuously read the HTTP stream for
-            // long-duration connectivity.
-            var listener = new CameraListener
-            {
-                Camera = cam,
-                Client = new(handler)
-                {
-                    Timeout = Timeout.InfiniteTimeSpan
-                }
-            };
-
             Console.WriteLine($"Connecting to {cam.DisplayName}...");
-            try
+            var listener = new CameraListener(cam);
+            var err = await listener.TryConnect();
+            if(string.IsNullOrWhiteSpace(err))
             {
-                var request = new HttpRequestMessage(HttpMethod.Get, connectionTemplate.Replace("*", cam.Addr));
-
-                listener.Response = await listener.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-                if(!listener.Response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"\tFailed, status {listener.Response.StatusCode}");
-                }
-                else
-                {
-                    Console.WriteLine("\tConnected");
-                    listeners.Add(listener);
-                }
+                Console.WriteLine("\tSuccess");
+                listeners.Add(listener);
             }
-            catch(HttpRequestException)
+            else
             {
-                Console.WriteLine("\tNo response");
-            }
-            catch(Exception ex)
-            {
-                Console.WriteLine($"\tFailed, {ex.GetType()}");
+                Console.WriteLine(err);
             }
         }
     }
