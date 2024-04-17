@@ -11,13 +11,18 @@ internal class Program
 {
     public static readonly string ConnectionTemplate = @"http://*/cgi-bin/eventManager.cgi?action=attach%26codes=%5BAll%5D";
 
+    public static ConcurrentQueue<CameraPayload> Messages { get; } = new();
+
     static IConfigurationRoot configRoot;
     static ServiceProvider services;
     static List<CameraSettings> cameras;
     static List<CameraListener> listeners;
-    static CancellationTokenSource cts = new();
 
-    public static ConcurrentQueue<CameraPayload> Messages { get; } = new();
+    static Task monitorAbort;
+    static Task monitorQueue;
+    static Task monitorToken;
+    static List<Task> listenerTasks;
+    static CancellationTokenSource cts = new();
 
     static async Task Main(string[] args)
     {
@@ -34,17 +39,8 @@ internal class Program
         // Establish connections
         await PrepareCameraListeners();
 
-        // Start the async tasks
-        List<Task> tasks = new(listeners.Count + 3)
-        {
-            Task.Run(() => WaitForEscapeKey(cts.Token)),
-            Task.Run(() => MonitorMessageQueue(cts.Token)),
-            new CancellationTokenTaskSource<int>(cts.Token).Task,
-        };
-        tasks.AddRange(listeners.Select(c => Task.Run(() => c.WaitForMessageAsync(cts.Token))).ToList());
-
-        // Wait for the ESC key to cancel the token
-        await Task.WhenAny(tasks);
+        // Processing loop
+        await RunAsync();
     }
 
     static void GetCamerasFromConfig()
@@ -119,7 +115,7 @@ internal class Program
 
     static async Task WaitForEscapeKey(CancellationToken cancellationToken)
     {
-        while(!Console.KeyAvailable && !cancellationToken.IsCancellationRequested)
+        while(!cancellationToken.IsCancellationRequested)
         {
             if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape) cts.Cancel();
             if (cancellationToken.IsCancellationRequested) return;
@@ -141,4 +137,81 @@ internal class Program
             await Task.Yield();
         }
     }
+
+    static async Task RunAsync()
+    {
+        // Start and queue the non-camera tasks
+        monitorToken = new CancellationTokenTaskSource<int>(cts.Token).Task;
+        monitorAbort = Task.Run(() => WaitForEscapeKey(cts.Token));
+        monitorQueue = Task.Run(() => MonitorMessageQueue(cts.Token));
+
+        // Abort if we have multiple exceptions in rapid succession
+        var exceptionCount = 0;
+        var maxExceptions = 3;
+        var clearExceptions = DateTime.MaxValue;
+        var clearSeconds = 5;
+
+        Console.WriteLine("\nPress ESC to exit\n");
+        while(!cts.IsCancellationRequested)
+        {
+            try
+            {
+                // Create a list of the monitors and listeners and wait for one to finish
+                var tasks = BuildTaskList();
+                if (tasks.Count == 3) Console.WriteLine("\nNot connected to any cameras");
+                await Task.WhenAny(tasks);
+            }
+            catch (Exception ex)
+            {
+                // Report exceptions and abort if the threshold is exceeded
+                Console.WriteLine($"\n{ex}");
+                if (DateTime.Now > clearExceptions)
+                {
+                    exceptionCount = 0;
+                    clearExceptions = DateTime.Now.AddSeconds(clearSeconds);
+                }
+                else
+                {
+                    if (exceptionCount == 0) clearExceptions = DateTime.Now.AddSeconds(clearSeconds);
+                }
+                exceptionCount++;
+                if (exceptionCount > maxExceptions)
+                {
+                    Console.WriteLine($"\nAborting: exception threshold exceeded ({maxExceptions} in {clearSeconds} seconds)");
+                    cts.Cancel();
+                }
+            }
+        }
+    }
+
+    static List<Task> BuildTaskList()
+    {
+        List<Task> tasks = new(listeners.Count + 3)
+        {
+            monitorToken,
+            monitorAbort,
+            monitorQueue,
+        };
+
+        if (listenerTasks is null)
+        {
+            // On first run, start all listeners
+            listenerTasks = listeners.Select(c => Task.Run(() => c.WaitForMessageAsync(cts.Token))).ToList();
+        }
+        else
+        {
+            // On subsequent runs, find completed listeners, remove, and restart
+
+            // TODO add listener disconnect / error handling (disposal?)
+            // TODO decide how to simulate individual listener disconnect/fail/etc.
+            // TODO find completed listeners, remove each from task list
+            // TODO check connection state and re-connect if necessary
+            // TODO start each new task, add to task list
+        }
+
+        tasks.AddRange(listenerTasks);
+
+        return tasks;
+    }
+
 }
