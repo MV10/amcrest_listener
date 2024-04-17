@@ -111,6 +111,12 @@ internal class Program
                 Console.WriteLine(err);
             }
         }
+
+        if(listeners.Count == 0)
+        {
+            Console.WriteLine("\nAll initial connections failed; aborting");
+            Environment.Exit(-1);
+        }
     }
 
     static async Task WaitForEscapeKey(CancellationToken cancellationToken)
@@ -140,15 +146,19 @@ internal class Program
 
     static async Task RunAsync()
     {
-        // Start and queue the non-camera tasks
+        // Start and queue the non-camera tasks; these should loop forever until the token cancels
+        // and unlike the camera listener tasks, there isn't a rational chance of exit due to errors
         monitorToken = new CancellationTokenTaskSource<int>(cts.Token).Task;
         monitorAbort = Task.Run(() => WaitForEscapeKey(cts.Token));
         monitorQueue = Task.Run(() => MonitorMessageQueue(cts.Token));
 
+        // When there are no cameras connected, try again
+        var connectionRetry = 5;
+
         // Abort if we have multiple exceptions in rapid succession
         var exceptionCount = 0;
         var maxExceptions = 3;
-        var clearExceptions = DateTime.MaxValue;
+        var exceptionWatch = DateTime.MaxValue;
         var clearSeconds = 5;
 
         Console.WriteLine("\nPress ESC to exit\n");
@@ -156,51 +166,52 @@ internal class Program
         {
             try
             {
-                // Create a list of the monitors and listeners and wait for one to finish
+                // Create a list of the monitors and listeners
                 var tasks = BuildTaskList();
-                if (tasks.Count == 3) Console.WriteLine("\nNot connected to any cameras");
+                // If there weren't any monitors, add a timer task instead
+                if (tasks.Count == 3)
+                {
+                    Console.WriteLine($"\nNo cameras connected, re-try in {connectionRetry} seconds");
+                    tasks.Add(Task.Run(() => Task.Delay(connectionRetry * 1000, cts.Token)));
+                }
+                // Wait for one of the loops to exit
                 await Task.WhenAny(tasks);
             }
             catch (Exception ex)
             {
                 // Report exceptions and abort if the threshold is exceeded
                 Console.WriteLine($"\n{ex}");
-                if (DateTime.Now > clearExceptions)
-                {
-                    exceptionCount = 0;
-                    clearExceptions = DateTime.Now.AddSeconds(clearSeconds);
-                }
-                else
-                {
-                    if (exceptionCount == 0) clearExceptions = DateTime.Now.AddSeconds(clearSeconds);
-                }
+                if (DateTime.Now > exceptionWatch) exceptionCount = 0;
+                if (exceptionCount == 0) exceptionWatch = DateTime.Now.AddSeconds(clearSeconds);
                 exceptionCount++;
                 if (exceptionCount > maxExceptions)
                 {
-                    Console.WriteLine($"\nAborting: exception threshold exceeded ({maxExceptions} in {clearSeconds} seconds)");
+                    Console.WriteLine($"\nAborting: {maxExceptions} exception threshold exceeded within {clearSeconds} seconds");
                     cts.Cancel();
                 }
             }
         }
+        Console.WriteLine("\nExiting\n");
     }
 
     static List<Task> BuildTaskList()
     {
         List<Task> tasks = new(listeners.Count + 3)
         {
-            monitorToken,
-            monitorAbort,
-            monitorQueue,
+            monitorToken,  // CTS cancelled for any reason
+            monitorAbort,  // ESC key pressed
+            monitorQueue,  // message queue handler
         };
 
-        if (listenerTasks is null)
+        if (listenerTasks is null || listenerTasks.Count == 3)
         {
-            // On first run, start all listeners
+            // Start all listeners on first run, or when no listeners successfully connected 
             listenerTasks = listeners.Select(c => Task.Run(() => c.WaitForMessageAsync(cts.Token))).ToList();
         }
         else
         {
             // On subsequent runs, find completed listeners, remove, and restart
+            // https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.taskstatus?view=net-8.0
 
             // TODO add listener disconnect / error handling (disposal?)
             // TODO decide how to simulate individual listener disconnect/fail/etc.
